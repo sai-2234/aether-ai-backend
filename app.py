@@ -10,6 +10,9 @@ app = Flask(__name__)
 CORS(app, origins="*")
 
 SERVER_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+# Get Tavily key from Hugging Face Space secrets
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "") 
+
 INVOKE_URL     = "https://integrate.api.nvidia.com/v1/chat/completions"
 DEFAULT_MODEL  = "meta/llama-3.1-70b-instruct"
 
@@ -28,6 +31,36 @@ Response Quality:
 
 Capabilities: software engineering, debugging, system design, mathematics, data analysis, research, science, creative writing, business strategy, language translation, everyday conversation.
 - Always respond in the same language the user writes in."""
+
+
+def search_the_web(query):
+    """
+    Queries the Tavily Search API for real-time live data context.
+    """
+    if not TAVILY_API_KEY:
+        print("Tavily API key is missing. Skipping live web search.")
+        return ""
+    
+    try:
+        tavily_url = "https://api.tavily.com/search"
+        payload = {
+            "api_key": TAVILY_API_KEY,
+            "query": query,
+            "search_depth": "basic",
+            "max_results": 3
+        }
+        headers = {"Content-Type": "application/json"}
+        response = requests.post(tavily_url, headers=headers, json=payload, timeout=5)
+        
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            context_list = []
+            for res in results:
+                context_list.append(f"Source: {res.get('title')}\nContent: {res.get('content')}")
+            return "\n\n".join(context_list)
+    except Exception as e:
+        print(f"Web search error: {e}")
+    return ""
 
 
 @app.route("/", methods=["GET"])
@@ -52,7 +85,15 @@ def chat():
     if not key_to_use:
         return jsonify({"error": "No API key configured. Add NVIDIA_API_KEY to your Space secrets."}), 400
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # 🌐 REAL-TIME LAYER: Check the internet for information
+    live_web_context = search_the_web(user_message)
+    
+    # Inject search results seamlessly into the System Prompt if found
+    dynamic_system_prompt = SYSTEM_PROMPT
+    if live_web_context:
+        dynamic_system_prompt += f"\n\n[REAL-TIME LIVE DATA CONTEXT FROM GOOGLE]\n{live_web_context}\n\nTask: Use the live data above to answer the user's question accurately regarding current timelines, scores, schedules, or updates."
+
+    messages = [{"role": "system", "content": dynamic_system_prompt}]
     for msg in history[-6:]:
         role    = msg.get("role", "")
         content = msg.get("content", "")
@@ -103,5 +144,7 @@ def chat():
 
 if __name__ == "__main__":
     # Hugging Face Spaces uses port 7860 by default
+    port = int(os.environ.get("PORT", 7860))
+    app.run(host="0.0.0.0", port=port, threaded=True)
     port = int(os.environ.get("PORT", 7860))
     app.run(host="0.0.0.0", port=port, threaded=True)
